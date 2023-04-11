@@ -12,7 +12,7 @@ const io = socketIo(server, {
 });
 
 const createDefaultGrid = (width, height) => {
-  const defaultColor = "#E4E8E6";
+  const defaultColor = "#1e1e2e";
   return Array(height)
     .fill(null)
     .map(() => Array(width).fill(defaultColor));
