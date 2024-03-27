@@ -1,5 +1,6 @@
 const http = require("http");
 const socketIo = require("socket.io");
+const { Pool } = require("pg");
 require("dotenv").config();
 
 const PORT = process.env.PORT || 3001;
@@ -11,12 +12,12 @@ const io = socketIo(server, {
   },
 });
 
-const createDefaultGrid = (width, height) => {
-  const defaultColor = "#1e1e2e";
-  return Array(height)
-    .fill(null)
-    .map(() => Array(width).fill(defaultColor));
-};
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
+});
 
 const createRandomColoredEgg = (width, height) => {
   const colors = [
@@ -76,19 +77,78 @@ const createRandomColoredEgg = (width, height) => {
   return grid;
 };
 
-const storedColors = createRandomColoredEgg(20, 20);
+const createTableQuery = `
+CREATE TABLE IF NOT EXISTS color_grid (
+  id SERIAL PRIMARY KEY,
+  x INTEGER NOT NULL,
+  y INTEGER NOT NULL,
+  color VARCHAR(7) NOT NULL,
+  UNIQUE(x, y)
+);
+`;
+
+const populateWithEggIfEmpty = async () => {
+  const { rowCount } = await pool.query("SELECT 1 FROM color_grid LIMIT 1;");
+
+  if (rowCount === 0) {
+    console.log("Populating the database with the egg pattern...");
+    const eggPattern = createRandomColoredEgg(20, 20);
+
+    const insertPromises = [];
+    for (let y = 0; y < eggPattern.length; y++) {
+      for (let x = 0; x < eggPattern[y].length; x++) {
+        const color = eggPattern[y][x];
+        const insertQuery = `INSERT INTO color_grid(x, y, color) VALUES($1, $2, $3);`;
+        insertPromises.push(pool.query(insertQuery, [x, y, color]));
+      }
+    }
+
+    // Wait for all inserts to complete
+    await Promise.all(insertPromises);
+    console.log("Egg pattern populated in the database.");
+  }
+};
+
+// Initialize the table and possibly populate it with the egg pattern
+pool
+  .query(createTableQuery)
+  .then(() => populateWithEggIfEmpty())
+  .catch((e) => console.error(e.stack));
 
 io.on("connection", (socket) => {
   console.log("New client connected");
 
-  socket.on("paint", (data) => {
-    storedColors[data.y] = storedColors[data.y] || [];
-    storedColors[data.y][data.x] = data.color;
-    // Broadcast the paint event to all other clients
-    socket.broadcast.emit("paint", data);
-  });
+  // Fetch stored colors from the database and send them to the client
+  pool.query(
+    "SELECT x, y, color FROM color_grid ORDER BY id ASC;",
+    (error, results) => {
+      if (error) {
+        throw error;
+      }
+      socket.emit("init", results.rows);
+    }
+  );
 
-  socket.emit("init", storedColors);
+  socket.on("paint", (data) => {
+    const insertOrUpdateQuery = `
+    INSERT INTO color_grid(x, y, color)
+    VALUES($1, $2, $3)
+    ON CONFLICT(x, y)
+    DO UPDATE SET color = EXCLUDED.color;
+    `;
+
+    pool.query(
+      insertOrUpdateQuery,
+      [data.x, data.y, data.color],
+      (error, results) => {
+        if (error) {
+          throw error;
+        }
+        // Broadcast the paint event to all other clients
+        socket.broadcast.emit("paint", data);
+      }
+    );
+  });
 
   socket.on("disconnect", () => {
     console.log("Client disconnected");
