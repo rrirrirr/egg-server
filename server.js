@@ -12,12 +12,21 @@ const io = socketIo(server, {
   },
 });
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
-});
+const pool = (() => {
+  if (process.env.NODE_ENV !== "production") {
+    return new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: false,
+    });
+  } else {
+    return new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: {
+        rejectUnauthorized: false,
+      },
+    });
+  }
+})();
 
 const createRandomColoredEgg = (width, height) => {
   const colors = [
@@ -82,7 +91,7 @@ CREATE TABLE IF NOT EXISTS color_grid (
   id SERIAL PRIMARY KEY,
   x INTEGER NOT NULL,
   y INTEGER NOT NULL,
-  color VARCHAR(7) NOT NULL,
+  color VARCHAR(31) NOT NULL,
   UNIQUE(x, y)
 );
 `;
@@ -123,6 +132,7 @@ io.on("connection", (socket) => {
     "SELECT x, y, color FROM color_grid ORDER BY id ASC;",
     (error, results) => {
       if (error) {
+        console.log("error", error);
         throw error;
       }
       socket.emit("init", results.rows);
